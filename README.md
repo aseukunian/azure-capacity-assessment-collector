@@ -1,6 +1,6 @@
 # Azure Capacity Reservation Data Collector
 
-This repository contains a read-only PowerShell collector used to gather the Azure inventory and operational data needed for an offline Capacity Reservation assessment.
+This repository contains a read-only PowerShell collector used to gather the Azure inventory and operational data needed for an offline capacity assessment.
 
 The collector creates JSON snapshots and a ZIP file in your environment. It does not deploy, update, stop, start, or delete Azure resources, and it does not upload data anywhere. You review the generated files and choose how to transfer them.
 
