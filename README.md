@@ -42,6 +42,18 @@ capacity-reservation-data-20260917-143000/
 capacity-reservation-data-20260917-143000.zip
 ```
 
+## Forecast inputs
+
+Azure inventory describes current deployment, but planned growth and placement
+flexibility require customer input. Complete
+[capacity_forecast_template.xlsx](capacity_forecast_template.xlsx) using the
+[forecast input guide](FORECAST_INPUTS.md), then return the workbook alongside
+the generated ZIP through the same approved secure channel.
+
+The collector does not currently read or include this workbook automatically.
+Do not upload a completed customer workbook to a GitHub issue or commit it to
+this repository.
+
 ## Parameters
 
 | Parameter | Purpose |
