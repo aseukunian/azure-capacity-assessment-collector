@@ -1,0 +1,127 @@
+# Azure Capacity Reservation Data Collector
+
+This repository contains a read-only PowerShell collector used to gather the Azure inventory and operational data needed for an offline Capacity Reservation assessment.
+
+The collector creates JSON snapshots and a ZIP file in your environment. It does not deploy, update, stop, start, or delete Azure resources, and it does not upload data anywhere. You review the generated files and choose how to transfer them.
+
+## Prerequisites
+
+- Windows PowerShell 5.1 or PowerShell 7
+- [Azure CLI](https://aka.ms/installazurecliwindows)
+- Azure Resource Graph extension
+- Access to the Azure tenant and subscriptions being assessed
+
+Install the Resource Graph extension once if needed:
+
+```powershell
+az extension add --name resource-graph
+```
+
+Sign in to the correct tenant:
+
+```powershell
+az login --tenant "<tenant-id>"
+```
+
+## Recommended command
+
+Run the collector from the directory containing `collect_azure_data.ps1`. Explicit subscription and location scopes are recommended:
+
+```powershell
+.\collect_azure_data.ps1 `
+    -Subscriptions "<subscription-id-1>","<subscription-id-2>" `
+    -Locations "westeurope","northeurope"
+```
+
+If no subscriptions are provided, the collector uses every enabled subscription visible to the signed-in identity. If no locations are provided, it collects all locations represented by the discovered VMs.
+
+The default output names resemble:
+
+```text
+capacity-reservation-data-20260917-143000/
+capacity-reservation-data-20260917-143000.zip
+```
+
+## Parameters
+
+| Parameter | Purpose |
+|---|---|
+| `-Subscriptions` | One or more Azure subscription IDs; defaults to all accessible enabled subscriptions |
+| `-Locations` | ARM location names such as `eastus` or `westeurope`; defaults to all discovered VM locations |
+| `-UptimeLookbackDays` | Runtime and cost window; default 30 days, maximum 365 |
+| `-AllocationLookbackDays` | Activity Log window; default 30 days, maximum 89 |
+| `-OutputDirectory` | Custom output directory; it must not already exist |
+| `-SkipCost` | Skip Cost Management runtime and cost collection |
+| `-SkipAllocationEvents` | Skip per-VM Activity Log collection |
+| `-SkipAsr` | Skip Azure Site Recovery collection |
+| `-SkipVmSizeInfo` | Skip VM SKU and Capacity Reservation capability collection |
+| `-SkipPhysicalZones` | Skip logical-to-physical availability-zone mappings |
+| `-NoZip` | Keep only the output directory and do not create a transfer ZIP |
+
+Collection of allocation events can take significant time in environments with many VMs. Use `-SkipAllocationEvents` when that information is not required.
+
+## Azure permissions
+
+The collector only performs read operations. The signed-in identity must be able to read:
+
+- Virtual machines, resource groups, subscriptions, and Capacity Reservations through Azure Resource Graph
+- Azure Site Recovery protected items unless `-SkipAsr` is used
+- Subscription location metadata and Microsoft.Compute VM SKUs
+- Regional Microsoft.Compute usage and quota data
+- Subscription Activity Logs unless `-SkipAllocationEvents` is used
+- Cost Management query data unless `-SkipCost` is used
+
+The Azure `Reader` role normally covers inventory, SKU, location, quota, and Activity Log reads. Cost data commonly also requires `Cost Management Reader` or an equivalent custom role at the relevant scope.
+
+Optional sections that cannot be read are recorded as failed in `manifest.json`; the collector continues where possible. VM inventory is required.
+
+## Collected files
+
+| File | Contents |
+|---|---|
+| `manifest.json` | Collector version, schema version, selected scope, lookback periods, and status of each section |
+| `vms.json` | VM inventory, tags, subscription information, resource groups, sizes, zones, and Capacity Reservation associations |
+| `capacity_reservations.json` | Capacity Reservation groups and reservations |
+| `asr.json` | Azure Site Recovery status and planned failover targets |
+| `physical_zones.json` | Subscription-specific logical-to-physical availability-zone mappings |
+| `vm_size_info.json` | VM family, vCPU count, and Capacity Reservation support |
+| `compute_quota_usage.json` | Regional Microsoft.Compute usage and quota limits |
+| `allocation_events.json` | Summarized VM allocation-related Activity Log events |
+| `uptime_daily.json` | Daily billed VM runtime from Cost Management |
+| `uptime_cost.json` | Amortized VM cost for the selected window |
+
+The generated package can contain customer-sensitive information, including Azure resource IDs, subscription and resource-group names, resource tags, VM names and sizes, ASR configuration, Activity Log callers and failure messages, and summarized cost records. It does not contain Azure access tokens or credentials.
+
+## Review and transfer
+
+1. Open `manifest.json` and confirm the tenant, subscriptions, locations, collection windows, and section statuses.
+2. Review the generated JSON files according to your organization's data-handling requirements.
+3. Transfer `capacity-reservation-data-*.zip` only through an approved secure channel.
+4. Do not attach generated customer data to a public GitHub issue.
+
+The ZIP is not sent automatically. It remains on the computer where the collector was run until you choose to transfer or delete it.
+
+## Cost access unavailable
+
+Run the collector without Cost Management queries:
+
+```powershell
+.\collect_azure_data.ps1 `
+    -Subscriptions "<subscription-id>" `
+    -Locations "eastus" `
+    -SkipCost
+```
+
+Your assessment contact may request a separate EA or MCA **Cost and usage (amortized)** Usage Details export through the approved secure transfer channel.
+
+## Troubleshooting
+
+- `Azure CLI was not found`: install Azure CLI and open a new PowerShell session.
+- `No active Azure CLI session`: run `az login --tenant "<tenant-id>"`.
+- `az graph` is unavailable: run `az extension add --name resource-graph`.
+- `No VMs were returned`: confirm the subscription IDs, location filters, and Resource Graph permissions.
+- Optional section failures: review the `sections` object in `manifest.json` and confirm the corresponding permissions.
+
+## Support and security
+
+See [SECURITY.md](SECURITY.md) before reporting a security concern. Never include generated snapshots, credentials, tenant details, or other customer-sensitive data in a public issue.

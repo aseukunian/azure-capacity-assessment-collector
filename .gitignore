@@ -1,0 +1,9 @@
+# Customer snapshot output
+capacity-reservation-data-*/
+capacity-reservation-data-*.zip
+
+# Local release artifacts
+dist/
+
+# PowerShell tooling
+PSScriptAnalyzerSettings.psd1
