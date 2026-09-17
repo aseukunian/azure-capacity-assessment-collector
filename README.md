@@ -1,4 +1,4 @@
-# Azure Capacity Reservation Data Collector
+# Azure Capacity Assessment Collector
 
 This repository contains a read-only PowerShell collector used to gather the Azure inventory and operational data needed for an offline capacity assessment.
 

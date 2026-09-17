@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Azure Capacity Reservation Data Collector are documented here.
+All notable changes to the Azure Capacity Assessment Collector are documented here.
 
 ## [1.0.0] - 2026-09-17
 
