@@ -23,6 +23,8 @@ Sign in to the correct tenant:
 az login --tenant "<tenant-id>"
 ```
 
+At startup, the collector runs a preflight before creating the output directory. It checks the PowerShell and Azure CLI versions, the Resource Graph extension, the active Azure CLI session, access to every selected subscription, and a minimal Resource Graph query against the first subscription. Each successful check is printed with `[OK]`; a failed check stops collection with a corrective error message.
+
 ## Recommended command
 
 Run the collector from the directory containing `collect_azure_data.ps1`. Explicit subscription and location scopes are recommended:
@@ -133,6 +135,8 @@ Your assessment contact may request a separate EA or MCA **Cost and usage (amort
 - `Azure CLI was not found`: install Azure CLI and open a new PowerShell session.
 - `No active Azure CLI session`: run `az login --tenant "<tenant-id>"`.
 - `az graph` is unavailable: run `az extension add --name resource-graph`.
+- Preflight reports an inaccessible, disabled, or wrong-tenant subscription: verify the subscription IDs and sign in to the tenant being assessed.
+- Resource Graph preflight does not complete: stop with `Ctrl+C`, then test Azure CLI connectivity against one subscription before retrying the collector.
 - `No VMs were returned`: confirm the subscription IDs, location filters, and Resource Graph permissions.
 - A Resource Graph progress line that does not advance for an extended period can indicate an Azure CLI, authentication, network, or service issue. Stop with `Ctrl+C` and test `az graph query` against one subscription.
 - Optional section failures: review the `sections` object in `manifest.json` and confirm the corresponding permissions.

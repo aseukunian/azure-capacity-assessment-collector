@@ -38,13 +38,18 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.0.1"
+$script:CollectorVersion = "1.0.2"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
 
 function Write-Section {
     param([Parameter(Mandatory)][string] $Message)
     Write-Host "`n==> $Message" -ForegroundColor Cyan
+}
+
+function Write-Check {
+    param([Parameter(Mandatory)][string] $Message)
+    Write-Host "  [OK] $Message" -ForegroundColor Green
 }
 
 function Invoke-AzJson {
@@ -408,25 +413,102 @@ function Convert-AllocationEvents {
     return $summaries.ToArray()
 }
 
-if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+Write-Host "Azure capacity-reservation data collector $script:CollectorVersion" -ForegroundColor Green
+Write-Section "Checking prerequisites"
+
+if ($PSVersionTable.PSVersion -lt [version]"5.1") {
+    throw "PowerShell 5.1 or later is required. Detected $($PSVersionTable.PSVersion)."
+}
+Write-Check "PowerShell $($PSVersionTable.PSVersion)"
+
+$azCommand = Get-Command az -ErrorAction SilentlyContinue
+if (-not $azCommand) {
     throw "Azure CLI was not found. Install it from https://aka.ms/installazurecliwindows and run 'az login'."
 }
+Write-Check "Azure CLI found at $($azCommand.Source)"
 
-$account = Invoke-AzJson -Arguments @("account", "show")
+try {
+    $azVersion = Invoke-AzJson -Arguments @("version")
+    Write-Check "Azure CLI $($azVersion.'azure-cli')"
+}
+catch {
+    throw "Azure CLI could not be started. Reinstall or repair Azure CLI and retry.`n$($_.Exception.Message)"
+}
+
+try {
+    $graphExtension = Invoke-AzJson -Arguments @("extension", "show", "--name", "resource-graph")
+    Write-Check "Azure Resource Graph extension $($graphExtension.version)"
+}
+catch {
+    throw "Azure Resource Graph extension was not found or could not be loaded. Run 'az extension add --name resource-graph' and retry.`n$($_.Exception.Message)"
+}
+
+Write-Section "Checking Azure authentication"
+try {
+    $account = Invoke-AzJson -Arguments @("account", "show")
+}
+catch {
+    throw "Azure CLI authentication check failed. Run 'az login --tenant <tenant-id>' and retry.`n$($_.Exception.Message)"
+}
 if (-not $account) {
     throw "No active Azure CLI session. Run 'az login' and retry."
 }
+Write-Check "Signed in to tenant $($account.tenantId)"
 
+try {
+    $availableAccounts = @(Invoke-AzJson -Arguments @("account", "list", "--all"))
+}
+catch {
+    throw "Azure CLI could not list accessible subscriptions. Run 'az login --tenant $($account.tenantId)' and retry.`n$($_.Exception.Message)"
+}
 $subscriptionIds = @(Get-NormalizedList -Values $Subscriptions)
 if ($subscriptionIds.Count -eq 0) {
     $subscriptionIds = @(
-        Invoke-AzJson -Arguments @("account", "list", "--query", "[?state=='Enabled'].id") |
-            ForEach-Object { [string]$_ }
+        $availableAccounts |
+            Where-Object {
+                ([string]$_.state).Equals("Enabled", [System.StringComparison]::OrdinalIgnoreCase) -and
+                ([string]$_.tenantId).Equals([string]$account.tenantId, [System.StringComparison]::OrdinalIgnoreCase)
+            } |
+            ForEach-Object { [string]$_.id }
     )
 }
 if ($subscriptionIds.Count -eq 0) {
-    throw "No enabled subscriptions were found for the signed-in identity."
+    throw "No enabled subscriptions were found in tenant $($account.tenantId) for the signed-in identity."
 }
+
+$accountBySubscriptionId = @{}
+foreach ($availableAccount in $availableAccounts) {
+    $accountBySubscriptionId[([string]$availableAccount.id).ToLowerInvariant()] = $availableAccount
+}
+$unavailableSubscriptionIds = @(
+    $subscriptionIds | Where-Object {
+        -not $accountBySubscriptionId.ContainsKey(([string]$_).ToLowerInvariant())
+    }
+)
+if ($unavailableSubscriptionIds.Count -gt 0) {
+    throw "The signed-in identity cannot access these subscriptions: $($unavailableSubscriptionIds -join ', '). Check the IDs and run 'az login' for the correct tenant."
+}
+
+$disabledSubscriptionIds = @(
+    $subscriptionIds | Where-Object {
+        $selectedAccount = $accountBySubscriptionId[([string]$_).ToLowerInvariant()]
+        -not ([string]$selectedAccount.state).Equals("Enabled", [System.StringComparison]::OrdinalIgnoreCase)
+    }
+)
+if ($disabledSubscriptionIds.Count -gt 0) {
+    throw "These subscriptions are not enabled: $($disabledSubscriptionIds -join ', ')."
+}
+
+$otherTenantSubscriptionIds = @(
+    $subscriptionIds | Where-Object {
+        $selectedAccount = $accountBySubscriptionId[([string]$_).ToLowerInvariant()]
+        -not ([string]$selectedAccount.tenantId).Equals([string]$account.tenantId, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+)
+if ($otherTenantSubscriptionIds.Count -gt 0) {
+    throw "These subscriptions are not in the active tenant $($account.tenantId): $($otherTenantSubscriptionIds -join ', '). Run 'az login --tenant <tenant-id>' for the tenant being assessed."
+}
+Write-Check "Access to $($subscriptionIds.Count) enabled subscriptions in the active tenant"
 
 $locationIds = @(Get-NormalizedList -Values $Locations)
 foreach ($location in $locationIds) {
@@ -435,13 +517,22 @@ foreach ($location in $locationIds) {
     }
 }
 
+Write-Host "  Testing Azure Resource Graph with the first subscription..."
+$null = @(
+    Get-GraphRows `
+        -Query "resources | take 1 | project id" `
+        -SubscriptionIds @($subscriptionIds[0]) `
+        -ProgressName "Resource Graph preflight"
+)
+Write-Check "Azure Resource Graph query completed"
+
 $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $outputRoot) {
     throw "Output directory already exists: $outputRoot"
 }
 New-Item -ItemType Directory -Path $outputRoot | Out-Null
 
-Write-Host "Azure capacity-reservation data collector $script:CollectorVersion" -ForegroundColor Green
+Write-Section "Starting collection"
 Write-Host "Tenant: $($account.tenantId)"
 Write-Host "Subscriptions: $($subscriptionIds.Count)"
 Write-Host "Locations: $(if ($locationIds.Count) { $locationIds -join ', ' } else { 'all' })"
