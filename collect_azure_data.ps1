@@ -38,7 +38,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.0.0"
+$script:CollectorVersion = "1.0.1"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
 
@@ -113,7 +113,9 @@ function Get-NormalizedList {
 function Get-GraphRows {
     param(
         [Parameter(Mandatory)][string] $Query,
-        [Parameter(Mandatory)][string[]] $SubscriptionIds
+        [Parameter(Mandatory)][string[]] $SubscriptionIds,
+        [Parameter(Mandatory)][string] $ProgressName,
+        [Parameter()][ValidateRange(0, 1000)][int] $SubscriptionBatchSize = 0
     )
 
     # The cmd.exe shim strips the quotes inside the KQL, so hand it to az as a file.
@@ -121,27 +123,57 @@ function Get-GraphRows {
     Set-Content -LiteralPath $queryPath -Value $Query -Encoding utf8
     $rows = [System.Collections.Generic.List[object]]::new()
     try {
-        $skip = 0
-        do {
-            $arguments = @("graph", "query", "--graph-query", "@$queryPath", "--first", "1000", "--skip", "$skip")
-            if ($SubscriptionIds.Count -gt 0) {
-                $arguments += "--subscriptions"
-                $arguments += $SubscriptionIds
-            }
-            $response = Invoke-AzJson -Arguments $arguments
-            $batch = @(if ($null -ne $response -and $response.PSObject.Properties.Name -contains "data") {
-                @($response.data)
-            }
-            else {
-                @($response)
-            })
-            foreach ($row in $batch) {
-                if ($null -ne $row) {
-                    $rows.Add($row)
+        $effectiveBatchSize = if ($SubscriptionBatchSize -gt 0) {
+            [math]::Min($SubscriptionBatchSize, $SubscriptionIds.Count)
+        }
+        else {
+            $SubscriptionIds.Count
+        }
+        $batchCount = [math]::Ceiling($SubscriptionIds.Count / $effectiveBatchSize)
+
+        for ($batchIndex = 0; $batchIndex -lt $batchCount; $batchIndex++) {
+            $firstSubscriptionIndex = $batchIndex * $effectiveBatchSize
+            $lastSubscriptionIndex = [math]::Min(
+                $firstSubscriptionIndex + $effectiveBatchSize - 1,
+                $SubscriptionIds.Count - 1
+            )
+            $currentSubscriptionIds = @($SubscriptionIds[$firstSubscriptionIndex..$lastSubscriptionIndex])
+            $skip = 0
+            $page = 1
+            do {
+                Write-Host (
+                    "  {0}: batch {1}/{2}, subscriptions {3}-{4} of {5}, page {6}..." -f
+                    $ProgressName,
+                    ($batchIndex + 1),
+                    $batchCount,
+                    ($firstSubscriptionIndex + 1),
+                    ($lastSubscriptionIndex + 1),
+                    $SubscriptionIds.Count,
+                    $page
+                )
+                $arguments = @(
+                    "graph", "query", "--graph-query", "@$queryPath",
+                    "--first", "1000", "--skip", "$skip", "--subscriptions"
+                )
+                $arguments += $currentSubscriptionIds
+                $response = Invoke-AzJson -Arguments $arguments
+                $pageRows = @(if ($null -ne $response -and $response.PSObject.Properties.Name -contains "data") {
+                    @($response.data)
                 }
+                else {
+                    @($response)
+                })
+                foreach ($row in $pageRows) {
+                    if ($null -ne $row) {
+                        $rows.Add($row)
+                    }
+                }
+                $skip += $pageRows.Count
+                Write-Host "    Received $($pageRows.Count) rows; $($rows.Count) total."
+                $page++
             }
-            $skip += $batch.Count
-        } while ($batch.Count -eq 1000)
+            while ($pageRows.Count -eq 1000)
+        }
     }
     finally {
         Remove-Item -LiteralPath $queryPath -Force -ErrorAction SilentlyContinue
@@ -447,7 +479,11 @@ $locationClause
     isPartOfVMSSFlexible, capacityReservationGroup, vmTags
 | order by id asc
 "@
-$vms = @(Get-GraphRows -Query $vmQuery -SubscriptionIds $subscriptionIds)
+$vms = @(
+    Get-GraphRows -Query $vmQuery -SubscriptionIds $subscriptionIds `
+        -ProgressName "VM inventory" -SubscriptionBatchSize 10 |
+        Sort-Object -Property id
+)
 if ($vms.Count -eq 0) {
     throw "No VMs were returned. Check subscription scope, locations, and Azure Resource Graph permissions."
 }
@@ -487,7 +523,11 @@ $locationClause
     capacityReservationGroupName, capacityReservationGroupZones
 | order by capacityReservationGroupId asc, id asc, zone asc
 "@
-$reservations = @(Get-GraphRows -Query $reservationQuery -SubscriptionIds $subscriptionIds)
+$reservations = @(
+    Get-GraphRows -Query $reservationQuery -SubscriptionIds $subscriptionIds `
+        -ProgressName "Capacity reservations" -SubscriptionBatchSize 10 |
+        Sort-Object -Property capacityReservationGroupId, id, zone
+)
 Export-JsonArray -Data $reservations -Path (Join-Path $outputRoot "capacity_reservations.json")
 $script:SectionStatus["capacityReservations"] = [ordered]@{ status = "succeeded"; records = $reservations.Count }
 Write-Host "Collected $($reservations.Count) capacity-reservation rows."
@@ -521,7 +561,7 @@ recoveryservicesresources
     targetVmSize=tostring(properties.providerSpecificDetails.recoveryAzureVMSize)
 | order by sourceVmId asc, targetVmName asc
 "@
-        Get-GraphRows -Query $asrQuery -SubscriptionIds $subscriptionIds
+        Get-GraphRows -Query $asrQuery -SubscriptionIds $subscriptionIds -ProgressName "Azure Site Recovery"
     }
 })
 $vmIdSet = @{}; foreach ($vm in $vms) { $vmIdSet[[string]$vm.id] = $true }

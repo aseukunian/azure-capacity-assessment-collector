@@ -72,6 +72,8 @@ this repository.
 
 Collection of allocation events can take significant time in environments with many VMs. Use `-SkipAllocationEvents` when that information is not required.
 
+Resource Graph inventory collection reports each subscription batch and result page as it runs. VM and Capacity Reservation queries use batches of 10 subscriptions so large tenant scopes provide regular progress feedback.
+
 ## Azure permissions
 
 The collector only performs read operations. The signed-in identity must be able to read:
@@ -132,6 +134,7 @@ Your assessment contact may request a separate EA or MCA **Cost and usage (amort
 - `No active Azure CLI session`: run `az login --tenant "<tenant-id>"`.
 - `az graph` is unavailable: run `az extension add --name resource-graph`.
 - `No VMs were returned`: confirm the subscription IDs, location filters, and Resource Graph permissions.
+- A Resource Graph progress line that does not advance for an extended period can indicate an Azure CLI, authentication, network, or service issue. Stop with `Ctrl+C` and test `az graph query` against one subscription.
 - Optional section failures: review the `sections` object in `manifest.json` and confirm the corresponding permissions.
 
 ## Support and security

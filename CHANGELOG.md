@@ -2,6 +2,13 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.0.1] - 2026-09-25
+
+### Changed
+
+- Added subscription-batch and page-level progress feedback for Azure Resource Graph collection.
+- Batched VM and Capacity Reservation inventory queries to improve feedback for large subscription scopes.
+
 ## [1.0.0] - 2026-09-17
 
 ### Added
