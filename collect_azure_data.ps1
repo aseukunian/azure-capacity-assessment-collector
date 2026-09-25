@@ -15,6 +15,10 @@ param(
     [int] $AllocationLookbackDays = 30,
 
     [Parameter()]
+    [ValidateRange(1, 16)]
+    [int] $AllocationConcurrency = 4,
+
+    [Parameter()]
     [string] $OutputDirectory = (Join-Path $PWD ("capacity-reservation-data-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss"))),
 
     [Parameter()]
@@ -38,7 +42,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.0.2"
+$script:CollectorVersion = "1.1.0"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
 
@@ -53,7 +57,10 @@ function Write-Check {
 }
 
 function Invoke-AzJson {
-    param([Parameter(Mandatory)][string[]] $Arguments)
+    param(
+        [Parameter(Mandatory)][string[]] $Arguments,
+        [Parameter()][scriptblock] $StatusAction
+    )
 
     # az ships as a .cmd shim on Windows, so cmd.exe re-parses the command line and
     # splits unquoted &, | and friends. Quote those arguments back up.
@@ -79,7 +86,13 @@ function Invoke-AzJson {
             $detail = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue).Trim()
             if ($attempt -lt 5 -and $detail -match "Too Many Requests|\b429\b") {
                 $delay = [math]::Pow(2, $attempt) * 5
-                Write-Host "  Throttled by Azure. Retrying in $delay seconds."
+                $message = "Throttled by Azure. Retrying in $delay seconds."
+                if ($StatusAction) {
+                    & $StatusAction $message
+                }
+                else {
+                    Write-Host "  $message"
+                }
                 Start-Sleep -Seconds $delay
                 continue
             }
@@ -330,7 +343,8 @@ function Get-ActivityLogEvents {
     param(
         [Parameter(Mandatory)][string] $VmId,
         [Parameter(Mandatory)][datetime] $From,
-        [Parameter(Mandatory)][datetime] $To
+        [Parameter(Mandatory)][datetime] $To,
+        [Parameter()][scriptblock] $StatusAction
     )
 
     $subscriptionId = $VmId.Split("/")[2]
@@ -339,7 +353,7 @@ function Get-ActivityLogEvents {
     $nextUrl = "https://management.azure.com/subscriptions/$subscriptionId/providers/microsoft.insights/eventtypes/management/values?api-version=2015-04-01&`$filter=$encodedFilter"
     $events = [System.Collections.Generic.List[object]]::new()
     while ($nextUrl) {
-        $response = Invoke-AzJson -Arguments @("rest", "--method", "get", "--url", $nextUrl)
+        $response = Invoke-AzJson -Arguments @("rest", "--method", "get", "--url", $nextUrl) -StatusAction $StatusAction
         foreach ($event in @($response.value)) {
             $events.Add($event)
         }
@@ -411,6 +425,185 @@ function Convert-AllocationEvents {
         })
     }
     return $summaries.ToArray()
+}
+
+function Invoke-AllocationEventCollection {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Vms,
+        [Parameter(Mandatory)][datetime] $From,
+        [Parameter(Mandatory)][datetime] $To,
+        [Parameter(Mandatory)][ValidateRange(1, 16)][int] $Concurrency
+    )
+
+    if ($Vms.Count -eq 0) {
+        return @()
+    }
+
+    $vmGroups = @(
+        $Vms |
+            Group-Object -Property {
+                $parts = ([string]$_.id).Split("/")
+                if ($parts.Count -lt 3 -or [string]::IsNullOrWhiteSpace($parts[2])) {
+                    throw "Invalid VM resource ID: $($_.id)"
+                }
+                $parts[2].ToLowerInvariant()
+            } |
+            Sort-Object -Property Name
+    )
+    $workerCount = [math]::Min($Concurrency, $vmGroups.Count)
+    Write-Host "  Activity Logs: using $workerCount worker(s) across $($vmGroups.Count) subscription(s)."
+
+    $functionDefinitions = @"
+function Invoke-AzJson {
+$(${function:Invoke-AzJson}.ToString())
+}
+function Get-ActivityLogEvents {
+$(${function:Get-ActivityLogEvents}.ToString())
+}
+function Convert-AllocationEvents {
+$(${function:Convert-AllocationEvents}.ToString())
+}
+"@
+    $workerScript = {
+        param(
+            [Parameter(Mandatory)][object[]] $VmGroup,
+            [Parameter(Mandatory)][datetime] $From,
+            [Parameter(Mandatory)][datetime] $To,
+            [Parameter(Mandatory)][object] $ProgressQueue,
+            [Parameter(Mandatory)][string] $FunctionDefinitions
+        )
+
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = "Stop"
+        $script:AzIsBatch = $null
+        . ([scriptblock]::Create($FunctionDefinitions))
+
+        $result = [System.Collections.Generic.List[object]]::new()
+        foreach ($vm in $VmGroup) {
+            $vmId = [string]$vm.id
+            $subscriptionId = $vmId.Split("/")[2]
+            $statusAction = {
+                param([string] $Message)
+                $ProgressQueue.Enqueue([pscustomobject][ordered]@{
+                    kind = "status"
+                    subscriptionId = $subscriptionId
+                    vmId = $vmId
+                    message = $Message
+                })
+            }.GetNewClosure()
+
+            $events = @(Get-ActivityLogEvents -VmId $vmId -From $From -To $To -StatusAction $statusAction)
+            foreach ($summary in @(Convert-AllocationEvents -VmId $vmId -Events $events)) {
+                $result.Add($summary)
+            }
+            $ProgressQueue.Enqueue([pscustomobject][ordered]@{
+                kind = "completed"
+                subscriptionId = $subscriptionId
+                vmId = $vmId
+            })
+        }
+        return $result.ToArray()
+    }
+
+    $progressQueue = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
+    $runspacePool = [runspacefactory]::CreateRunspacePool(1, $workerCount)
+    $workers = [System.Collections.Generic.List[object]]::new()
+    $result = [System.Collections.Generic.List[object]]::new()
+    $completedVmCount = 0
+    $runspacePool.Open()
+
+    try {
+        foreach ($vmGroup in $vmGroups) {
+            $powerShell = [powershell]::Create()
+            $powerShell.RunspacePool = $runspacePool
+            [void]$powerShell.AddScript($workerScript)
+            [void]$powerShell.AddArgument(@($vmGroup.Group))
+            [void]$powerShell.AddArgument($From)
+            [void]$powerShell.AddArgument($To)
+            [void]$powerShell.AddArgument($progressQueue)
+            [void]$powerShell.AddArgument($functionDefinitions)
+            $workers.Add([pscustomobject][ordered]@{
+                subscriptionId = $vmGroup.Name
+                powerShell = $powerShell
+                handle = $powerShell.BeginInvoke()
+            })
+        }
+
+        while ($workers.Count -gt 0) {
+            $progressMessage = $null
+            while ($progressQueue.TryDequeue([ref]$progressMessage)) {
+                if ($progressMessage.kind -eq "completed") {
+                    $completedVmCount++
+                    if (
+                        $completedVmCount -eq 1 -or
+                        $completedVmCount % 10 -eq 0 -or
+                        $completedVmCount -eq $Vms.Count
+                    ) {
+                        Write-Host "  Activity Logs: $completedVmCount/$($Vms.Count)"
+                    }
+                }
+                elseif ($progressMessage.kind -eq "status") {
+                    Write-Host "  $($progressMessage.message) Subscription: $($progressMessage.subscriptionId)."
+                }
+                $progressMessage = $null
+            }
+
+            foreach ($worker in @($workers)) {
+                if ($worker.handle.IsCompleted) {
+                    try {
+                        foreach ($row in @($worker.powerShell.EndInvoke($worker.handle))) {
+                            if ($null -ne $row) {
+                                $result.Add($row)
+                            }
+                        }
+                        if ($worker.powerShell.HadErrors) {
+                            $workerError = @($worker.powerShell.Streams.Error) | Select-Object -First 1
+                            throw "Activity Log worker failed for subscription $($worker.subscriptionId): $workerError"
+                        }
+                    }
+                    finally {
+                        $worker.powerShell.Dispose()
+                        [void]$workers.Remove($worker)
+                    }
+                }
+            }
+
+            if ($workers.Count -gt 0) {
+                Start-Sleep -Milliseconds 200
+            }
+        }
+
+        $progressMessage = $null
+        while ($progressQueue.TryDequeue([ref]$progressMessage)) {
+            if ($progressMessage.kind -eq "completed") {
+                $completedVmCount++
+                if ($completedVmCount % 10 -eq 0 -or $completedVmCount -eq $Vms.Count) {
+                    Write-Host "  Activity Logs: $completedVmCount/$($Vms.Count)"
+                }
+            }
+            elseif ($progressMessage.kind -eq "status") {
+                Write-Host "  $($progressMessage.message) Subscription: $($progressMessage.subscriptionId)."
+            }
+            $progressMessage = $null
+        }
+    }
+    finally {
+        foreach ($worker in @($workers)) {
+            try {
+                $worker.powerShell.Stop()
+            }
+            finally {
+                $worker.powerShell.Dispose()
+            }
+        }
+        $runspacePool.Close()
+        $runspacePool.Dispose()
+    }
+
+    return @(
+        $result.ToArray() |
+            Sort-Object -Property id, eventTimestamp, operationName, correlationId
+    )
 }
 
 Write-Host "Azure capacity-reservation data collector $script:CollectorVersion" -ForegroundColor Green
@@ -536,6 +729,7 @@ Write-Section "Starting collection"
 Write-Host "Tenant: $($account.tenantId)"
 Write-Host "Subscriptions: $($subscriptionIds.Count)"
 Write-Host "Locations: $(if ($locationIds.Count) { $locationIds -join ', ' } else { 'all' })"
+Write-Host "Allocation workers: $AllocationConcurrency"
 Write-Host "Output: $outputRoot"
 
 $locationClause = if ($locationIds.Count) {
@@ -820,18 +1014,12 @@ if ($SkipAllocationEvents) {
 }
 else {
     $allocationRows = @(Invoke-OptionalSection -Name "allocationEvents" -Action {
-        $result = [System.Collections.Generic.List[object]]::new()
         $allocationFrom = $utcNow.AddDays(-$AllocationLookbackDays)
-        for ($index = 0; $index -lt $vms.Count; $index++) {
-            if (($index + 1) % 10 -eq 0 -or $index -eq 0 -or $index + 1 -eq $vms.Count) {
-                Write-Host "  Activity Logs: $($index + 1)/$($vms.Count)"
-            }
-            $events = @(Get-ActivityLogEvents -VmId $vms[$index].id -From $allocationFrom -To $utcNow)
-            foreach ($summary in @(Convert-AllocationEvents -VmId $vms[$index].id -Events $events)) {
-                $result.Add($summary)
-            }
-        }
-        $result.ToArray()
+        Invoke-AllocationEventCollection `
+            -Vms $vms `
+            -From $allocationFrom `
+            -To $utcNow `
+            -Concurrency $AllocationConcurrency
     })
 }
 Export-JsonArray -Data $allocationRows -Path (Join-Path $outputRoot "allocation_events.json")
@@ -845,6 +1033,7 @@ $manifest = [ordered]@{
     locations = $locationIds
     uptimeLookbackDays = $UptimeLookbackDays
     allocationLookbackDays = $AllocationLookbackDays
+    allocationConcurrency = $AllocationConcurrency
     sections = $script:SectionStatus
 }
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $outputRoot "manifest.json") -Encoding utf8

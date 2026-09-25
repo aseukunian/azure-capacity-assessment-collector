@@ -2,6 +2,16 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.1.0] - 2026-09-25
+
+### Added
+
+- Added configurable, subscription-aware parallel collection of VM allocation events.
+
+### Changed
+
+- Activity Log collection now uses four subscription workers by default while keeping requests within each subscription sequential.
+
 ## [1.0.2] - 2026-09-25
 
 ### Added

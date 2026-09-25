@@ -64,6 +64,7 @@ this repository.
 | `-Locations` | ARM location names such as `eastus` or `westeurope`; defaults to all discovered VM locations |
 | `-UptimeLookbackDays` | Runtime and cost window; default 30 days, maximum 365 |
 | `-AllocationLookbackDays` | Activity Log window; default 30 days, maximum 89 |
+| `-AllocationConcurrency` | Concurrent subscription workers for Activity Logs; default 4, range 1–16 |
 | `-OutputDirectory` | Custom output directory; it must not already exist |
 | `-SkipCost` | Skip Cost Management runtime and cost collection |
 | `-SkipAllocationEvents` | Skip per-VM Activity Log collection |
@@ -72,7 +73,7 @@ this repository.
 | `-SkipPhysicalZones` | Skip logical-to-physical availability-zone mappings |
 | `-NoZip` | Keep only the output directory and do not create a transfer ZIP |
 
-Collection of allocation events can take significant time in environments with many VMs. Use `-SkipAllocationEvents` when that information is not required.
+Allocation events are collected concurrently across subscriptions, with four workers by default. VMs within each subscription remain sequential to reduce throttling pressure. Use `-AllocationConcurrency 1` for fully sequential collection, lower the value when throttling is sustained, or use `-SkipAllocationEvents` when that information is not required. Environments whose VMs are concentrated in one subscription will see less benefit from concurrency.
 
 Resource Graph inventory collection reports each subscription batch and result page as it runs. VM and Capacity Reservation queries use batches of 10 subscriptions so large tenant scopes provide regular progress feedback.
 
@@ -139,6 +140,7 @@ Your assessment contact may request a separate EA or MCA **Cost and usage (amort
 - Resource Graph preflight does not complete: stop with `Ctrl+C`, then test Azure CLI connectivity against one subscription before retrying the collector.
 - `No VMs were returned`: confirm the subscription IDs, location filters, and Resource Graph permissions.
 - A Resource Graph progress line that does not advance for an extended period can indicate an Azure CLI, authentication, network, or service issue. Stop with `Ctrl+C` and test `az graph query` against one subscription.
+- Sustained Activity Log throttling: rerun with a lower value such as `-AllocationConcurrency 2` or `-AllocationConcurrency 1`.
 - Optional section failures: review the `sections` object in `manifest.json` and confirm the corresponding permissions.
 
 ## Support and security
