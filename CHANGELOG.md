@@ -2,6 +2,20 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.3.0] - 2026-09-29
+
+### Added
+
+- Added `-QuotaOnly` to collect regional Microsoft.Compute quota usage without running inventory or other optional sections.
+
+## [1.2.1] - 2026-09-28
+
+### Fixed
+
+- Preserved physical-zone mappings when an inaccessible ASR target subscription fails.
+- Retried transient Azure CLI network and service failures in addition to throttling responses.
+- Reported partially successful physical-zone collection, including per-subscription errors, in the manifest.
+
 ## [1.2.0] - 2026-09-28
 
 ### Added

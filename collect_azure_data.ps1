@@ -22,6 +22,9 @@ param(
     [switch] $AllocationEventsOnly,
 
     [Parameter()]
+    [switch] $QuotaOnly,
+
+    [Parameter()]
     [string] $OutputDirectory = (Join-Path $PWD ("capacity-reservation-data-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss"))),
 
     [Parameter()]
@@ -45,12 +48,15 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.2.0"
+$script:CollectorVersion = "1.3.0"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
 
 if ($AllocationEventsOnly -and $SkipAllocationEvents) {
     throw "-AllocationEventsOnly cannot be combined with -SkipAllocationEvents."
+}
+if ($AllocationEventsOnly -and $QuotaOnly) {
+    throw "-AllocationEventsOnly and -QuotaOnly cannot be combined."
 }
 
 function Write-Section {
@@ -91,9 +97,14 @@ function Invoke-AzJson {
             $output = & az @safeArguments --only-show-errors --output json 2> $stderrPath
             if ($LASTEXITCODE -eq 0) { break }
             $detail = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue).Trim()
-            if ($attempt -lt 5 -and $detail -match "Too Many Requests|\b429\b") {
+            $isRetryable = $detail -match (
+                "Too Many Requests|\b429\b|\b50[0234]\b|timed? ?out|timeout|" +
+                "temporarily unavailable|connection (?:aborted|reset|refused)|" +
+                "failed to establish a new connection|Max retries exceeded|WinError 10013"
+            )
+            if ($attempt -lt 5 -and $isRetryable) {
                 $delay = [math]::Pow(2, $attempt) * 5
-                $message = "Throttled by Azure. Retrying in $delay seconds."
+                $message = "Transient Azure CLI failure. Retrying in $delay seconds."
                 if ($StatusAction) {
                     & $StatusAction $message
                 }
@@ -255,6 +266,30 @@ function Get-ComputeQuotaUsage {
             }
         }
     )
+}
+
+function Get-ComputeQuotaUsageForScope {
+    param(
+        [Parameter(Mandatory)][string[]] $SubscriptionIds,
+        [Parameter(Mandatory)][string[]] $LocationIds
+    )
+
+    $result = [System.Collections.Generic.List[object]]::new()
+    foreach ($subscriptionId in $SubscriptionIds) {
+        foreach ($location in $LocationIds) {
+            Write-Host "  Compute quotas: $subscriptionId / $location"
+            try {
+                foreach ($row in @(Get-ComputeQuotaUsage -SubscriptionId $subscriptionId -Location $location)) {
+                    $result.Add($row)
+                }
+            }
+            catch {
+                # A region can be unavailable to a subscription. Keep collecting the rest.
+                Write-Warning "  Compute quotas unavailable for $subscriptionId / $location`: $($_.Exception.Message)"
+            }
+        }
+    }
+    return $result.ToArray()
 }
 
 function Invoke-OptionalSection {
@@ -635,12 +670,14 @@ catch {
     throw "Azure CLI could not be started. Reinstall or repair Azure CLI and retry.`n$($_.Exception.Message)"
 }
 
-try {
-    $graphExtension = Invoke-AzJson -Arguments @("extension", "show", "--name", "resource-graph")
-    Write-Check "Azure Resource Graph extension $($graphExtension.version)"
-}
-catch {
-    throw "Azure Resource Graph extension was not found or could not be loaded. Run 'az extension add --name resource-graph' and retry.`n$($_.Exception.Message)"
+if (-not $QuotaOnly) {
+    try {
+        $graphExtension = Invoke-AzJson -Arguments @("extension", "show", "--name", "resource-graph")
+        Write-Check "Azure Resource Graph extension $($graphExtension.version)"
+    }
+    catch {
+        throw "Azure Resource Graph extension was not found or could not be loaded. Run 'az extension add --name resource-graph' and retry.`n$($_.Exception.Message)"
+    }
 }
 
 Write-Section "Checking Azure authentication"
@@ -716,15 +753,20 @@ foreach ($location in $locationIds) {
         throw "Invalid Azure location '$location'. Use ARM names such as eastus or westeurope."
     }
 }
+if ($QuotaOnly -and $locationIds.Count -eq 0) {
+    throw "-QuotaOnly requires -Locations because VM inventory is intentionally not collected to discover regions."
+}
 
-Write-Host "  Testing Azure Resource Graph with the first subscription..."
-$null = @(
-    Get-GraphRows `
-        -Query "resources | take 1 | project id" `
-        -SubscriptionIds @($subscriptionIds[0]) `
-        -ProgressName "Resource Graph preflight"
-)
-Write-Check "Azure Resource Graph query completed"
+if (-not $QuotaOnly) {
+    Write-Host "  Testing Azure Resource Graph with the first subscription..."
+    $null = @(
+        Get-GraphRows `
+            -Query "resources | take 1 | project id" `
+            -SubscriptionIds @($subscriptionIds[0]) `
+            -ProgressName "Resource Graph preflight"
+    )
+    Write-Check "Azure Resource Graph query completed"
+}
 
 $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $outputRoot) {
@@ -736,8 +778,19 @@ Write-Section "Starting collection"
 Write-Host "Tenant: $($account.tenantId)"
 Write-Host "Subscriptions: $($subscriptionIds.Count)"
 Write-Host "Locations: $(if ($locationIds.Count) { $locationIds -join ', ' } else { 'all' })"
-Write-Host "Allocation workers: $AllocationConcurrency"
-Write-Host "Mode: $(if ($AllocationEventsOnly) { 'allocation events only' } else { 'full collection' })"
+if (-not $QuotaOnly) {
+    Write-Host "Allocation workers: $AllocationConcurrency"
+}
+$collectionMode = if ($QuotaOnly) {
+    "quota only"
+}
+elseif ($AllocationEventsOnly) {
+    "allocation events only"
+}
+else {
+    "full collection"
+}
+Write-Host "Mode: $collectionMode"
 Write-Host "Output: $outputRoot"
 
 $locationClause = if ($locationIds.Count) {
@@ -746,6 +799,14 @@ $locationClause = if ($locationIds.Count) {
 }
 else { "" }
 
+if ($QuotaOnly) {
+    Write-Section "Collecting Compute quota and usage"
+    $computeQuotaUsage = @(Invoke-OptionalSection -Name "computeQuotaUsage" -Action {
+        Get-ComputeQuotaUsageForScope -SubscriptionIds $subscriptionIds -LocationIds $locationIds
+    })
+    Export-JsonArray -Data $computeQuotaUsage -Path (Join-Path $outputRoot "compute_quota_usage.json")
+}
+else {
 Write-Section "Collecting VM inventory"
 $vmQuery = @"
 resources
@@ -875,6 +936,7 @@ $allLocations = @(
 )
 
 Write-Section "Collecting physical availability-zone mappings"
+$physicalZoneErrors = [System.Collections.Generic.List[object]]::new()
 $physicalZones = @(if ($SkipPhysicalZones) {
     $script:SectionStatus["physicalZones"] = [ordered]@{ status = "skipped"; records = 0 }
     @()
@@ -883,26 +945,44 @@ else {
     Invoke-OptionalSection -Name "physicalZones" -Action {
         $result = [System.Collections.Generic.List[object]]::new()
         foreach ($subscriptionId in $allSubscriptionIds) {
-            $url = "https://management.azure.com/subscriptions/$subscriptionId/locations?api-version=2022-12-01"
-            $response = Invoke-AzJson -Arguments @("rest", "--method", "get", "--url", $url)
-            foreach ($location in @($response.value | Where-Object { $allLocations -contains ([string]$_.name).ToLowerInvariant() })) {
-                $zoneMappings = if ($location.PSObject.Properties.Name -contains "availabilityZoneMappings") {
-                    @($location.availabilityZoneMappings)
+            try {
+                $url = "https://management.azure.com/subscriptions/$subscriptionId/locations?api-version=2022-12-01"
+                $response = Invoke-AzJson -Arguments @("rest", "--method", "get", "--url", $url)
+                foreach ($location in @($response.value | Where-Object { $allLocations -contains ([string]$_.name).ToLowerInvariant() })) {
+                    $zoneMappings = if ($location.PSObject.Properties.Name -contains "availabilityZoneMappings") {
+                        @($location.availabilityZoneMappings)
+                    }
+                    else { @() }
+                    foreach ($mapping in $zoneMappings) {
+                        $result.Add([pscustomobject][ordered]@{
+                            subscription_id = $subscriptionId
+                            location = $location.name
+                            logical_zone = [string]$mapping.logicalZone
+                            physical_zone = [string]$mapping.physicalZone
+                        })
+                    }
                 }
-                else { @() }
-                foreach ($mapping in $zoneMappings) {
-                    $result.Add([pscustomobject][ordered]@{
-                        subscription_id = $subscriptionId
-                        location = $location.name
-                        logical_zone = [string]$mapping.logicalZone
-                        physical_zone = [string]$mapping.physicalZone
-                    })
-                }
+            }
+            catch {
+                $message = $_.Exception.Message
+                Write-Warning "  Physical-zone mappings unavailable for $subscriptionId`: $message"
+                $physicalZoneErrors.Add([pscustomobject][ordered]@{
+                    subscription_id = $subscriptionId
+                    error = $message
+                })
             }
         }
         $result.ToArray()
     }
 })
+if (-not $SkipPhysicalZones -and $physicalZoneErrors.Count -gt 0) {
+    $script:SectionStatus["physicalZones"] = [ordered]@{
+        status = if ($physicalZones.Count -gt 0) { "partial" } else { "failed" }
+        records = $physicalZones.Count
+        failedSubscriptions = $physicalZoneErrors.Count
+        errors = $physicalZoneErrors.ToArray()
+    }
+}
 Export-JsonArray -Data $physicalZones -Path (Join-Path $outputRoot "physical_zones.json")
 
 Write-Section "Collecting VM-size capabilities"
@@ -948,22 +1028,7 @@ Export-JsonArray -Data $vmSizeInfo -Path (Join-Path $outputRoot "vm_size_info.js
 
 Write-Section "Collecting Compute quota and usage"
 $computeQuotaUsage = @(Invoke-OptionalSection -Name "computeQuotaUsage" -Action {
-    $result = [System.Collections.Generic.List[object]]::new()
-    foreach ($subscriptionId in $allSubscriptionIds) {
-        foreach ($location in $allLocations) {
-            Write-Host "  Compute quotas: $subscriptionId / $location"
-            try {
-                foreach ($row in @(Get-ComputeQuotaUsage -SubscriptionId $subscriptionId -Location $location)) {
-                    $result.Add($row)
-                }
-            }
-            catch {
-                # A region can be unavailable to a subscription. Keep collecting the rest.
-                Write-Warning "  Compute quotas unavailable for $subscriptionId / $location`: $($_.Exception.Message)"
-            }
-        }
-    }
-    $result.ToArray()
+    Get-ComputeQuotaUsageForScope -SubscriptionIds $allSubscriptionIds -LocationIds $allLocations
 })
 Export-JsonArray -Data $computeQuotaUsage -Path (Join-Path $outputRoot "compute_quota_usage.json")
 
@@ -989,16 +1054,14 @@ else {
                 $costList.Add($row)
             }
         }
-        $uptimeDaily = $dailyList.ToArray()
-        $uptimeCost = $costList.ToArray()
         $uptimeDaily = @(
-            $uptimeDaily | Where-Object {
+            $dailyList.ToArray() | Where-Object {
                 $_.PSObject.Properties.Name -contains "ResourceId" -and
                 $_.ResourceId -and $vmIdSet.ContainsKey(([string]$_.ResourceId).ToLowerInvariant())
             }
         )
         $uptimeCost = @(
-            $uptimeCost | Where-Object {
+            $costList.ToArray() | Where-Object {
                 $_.PSObject.Properties.Name -contains "ResourceId" -and
                 $_.ResourceId -and $vmIdSet.ContainsKey(([string]$_.ResourceId).ToLowerInvariant())
             }
@@ -1010,7 +1073,13 @@ else {
     }
     catch {
         Write-Warning "Cost Management collection failed: $($_.Exception.Message)"
-        $script:SectionStatus["cost"] = [ordered]@{ status = "failed"; records = 0; error = $_.Exception.Message }
+        $uptimeDaily = @()
+        $uptimeCost = @()
+        $script:SectionStatus["cost"] = [ordered]@{
+            status = "failed"
+            records = 0
+            error = $_.Exception.Message
+        }
     }
 }
 Export-JsonArray -Data $uptimeDaily -Path (Join-Path $outputRoot "uptime_daily.json")
@@ -1036,11 +1105,20 @@ else {
     })
 }
 Export-JsonArray -Data $allocationRows -Path (Join-Path $outputRoot "allocation_events.json")
+}
 
 $manifest = [ordered]@{
     schemaVersion = 1
     collectorVersion = $script:CollectorVersion
-    collectionMode = if ($AllocationEventsOnly) { "allocationEventsOnly" } else { "full" }
+    collectionMode = if ($QuotaOnly) {
+        "quotaOnly"
+    }
+    elseif ($AllocationEventsOnly) {
+        "allocationEventsOnly"
+    }
+    else {
+        "full"
+    }
     collectedAtUtc = [datetime]::UtcNow.ToString("o")
     tenantId = $account.tenantId
     subscriptions = $subscriptionIds
