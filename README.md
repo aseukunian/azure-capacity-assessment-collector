@@ -65,6 +65,7 @@ this repository.
 | `-UptimeLookbackDays` | Runtime and cost window; default 30 days, maximum 365 |
 | `-AllocationLookbackDays` | Activity Log window; default 30 days, maximum 89 |
 | `-AllocationConcurrency` | Concurrent subscription workers for Activity Logs; default 4, range 1–16 |
+| `-AllocationEventsOnly` | Collect only full VM inventory and allocation events; omit all unrelated sections and files |
 | `-OutputDirectory` | Custom output directory; it must not already exist |
 | `-SkipCost` | Skip Cost Management runtime and cost collection |
 | `-SkipAllocationEvents` | Skip per-VM Activity Log collection |
@@ -76,6 +77,21 @@ this repository.
 Allocation events are collected concurrently across subscriptions, with four workers by default. VMs within each subscription remain sequential to reduce throttling pressure. Use `-AllocationConcurrency 1` for fully sequential collection, lower the value when throttling is sustained, or use `-SkipAllocationEvents` when that information is not required. Environments whose VMs are concentrated in one subscription will see less benefit from concurrency.
 
 Resource Graph inventory collection reports each subscription batch and result page as it runs. VM and Capacity Reservation queries use batches of 10 subscriptions so large tenant scopes provide regular progress feedback.
+
+### Allocation events only
+
+Use `-AllocationEventsOnly` to collect the full VM inventory and selected VM lifecycle Activity Log events without calling Capacity Reservation, quota, Cost Management, ASR, VM SKU, or physical-zone APIs:
+
+```powershell
+.\collect_azure_data.ps1 `
+    -Subscriptions "<subscription-id-1>","<subscription-id-2>" `
+    -Locations "westeurope","northeurope" `
+    -AllocationLookbackDays 30 `
+    -AllocationConcurrency 4 `
+    -AllocationEventsOnly
+```
+
+This mode produces only `vms.json`, `allocation_events.json`, and `manifest.json`, plus the ZIP unless `-NoZip` is supplied. It cannot be combined with `-SkipAllocationEvents`. Other skip switches are unnecessary and have no additional effect.
 
 ## Azure permissions
 
@@ -89,6 +105,8 @@ The collector only performs read operations. The signed-in identity must be able
 - Cost Management query data unless `-SkipCost` is used
 
 The Azure `Reader` role normally covers inventory, SKU, location, quota, and Activity Log reads. Cost data commonly also requires `Cost Management Reader` or an equivalent custom role at the relevant scope.
+
+In allocation-events-only mode, the identity needs VM inventory access through Azure Resource Graph and subscription Activity Log access. The other listed permissions are not used.
 
 Optional sections that cannot be read are recorded as failed in `manifest.json`; the collector continues where possible. VM inventory is required.
 
@@ -106,6 +124,8 @@ Optional sections that cannot be read are recorded as failed in `manifest.json`;
 | `allocation_events.json` | Summarized VM allocation-related Activity Log events |
 | `uptime_daily.json` | Daily billed VM runtime from Cost Management |
 | `uptime_cost.json` | Amortized VM cost for the selected window |
+
+Allocation-events-only mode intentionally emits only `vms.json`, `allocation_events.json`, and `manifest.json`.
 
 The generated package can contain customer-sensitive information, including Azure resource IDs, subscription and resource-group names, resource tags, VM names and sizes, ASR configuration, Activity Log callers and failure messages, and summarized cost records. It does not contain Azure access tokens or credentials.
 

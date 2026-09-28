@@ -19,6 +19,9 @@ param(
     [int] $AllocationConcurrency = 4,
 
     [Parameter()]
+    [switch] $AllocationEventsOnly,
+
+    [Parameter()]
     [string] $OutputDirectory = (Join-Path $PWD ("capacity-reservation-data-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss"))),
 
     [Parameter()]
@@ -42,9 +45,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.1.0"
+$script:CollectorVersion = "1.2.0"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
+
+if ($AllocationEventsOnly -and $SkipAllocationEvents) {
+    throw "-AllocationEventsOnly cannot be combined with -SkipAllocationEvents."
+}
 
 function Write-Section {
     param([Parameter(Mandatory)][string] $Message)
@@ -730,6 +737,7 @@ Write-Host "Tenant: $($account.tenantId)"
 Write-Host "Subscriptions: $($subscriptionIds.Count)"
 Write-Host "Locations: $(if ($locationIds.Count) { $locationIds -join ', ' } else { 'all' })"
 Write-Host "Allocation workers: $AllocationConcurrency"
+Write-Host "Mode: $(if ($AllocationEventsOnly) { 'allocation events only' } else { 'full collection' })"
 Write-Host "Output: $outputRoot"
 
 $locationClause = if ($locationIds.Count) {
@@ -776,6 +784,7 @@ Export-JsonArray -Data $vms -Path (Join-Path $outputRoot "vms.json")
 $script:SectionStatus["vms"] = [ordered]@{ status = "succeeded"; records = $vms.Count }
 Write-Host "Collected $($vms.Count) VMs."
 
+if (-not $AllocationEventsOnly) {
 Write-Section "Collecting capacity reservations"
 $reservationQuery = @"
 resources
@@ -1006,7 +1015,11 @@ else {
 }
 Export-JsonArray -Data $uptimeDaily -Path (Join-Path $outputRoot "uptime_daily.json")
 Export-JsonArray -Data $uptimeCost -Path (Join-Path $outputRoot "uptime_cost.json")
+}
 
+if ($AllocationEventsOnly) {
+    $utcNow = [datetime]::UtcNow
+}
 Write-Section "Collecting VM allocation events"
 $allocationRows = @()
 if ($SkipAllocationEvents) {
@@ -1027,6 +1040,7 @@ Export-JsonArray -Data $allocationRows -Path (Join-Path $outputRoot "allocation_
 $manifest = [ordered]@{
     schemaVersion = 1
     collectorVersion = $script:CollectorVersion
+    collectionMode = if ($AllocationEventsOnly) { "allocationEventsOnly" } else { "full" }
     collectedAtUtc = [datetime]::UtcNow.ToString("o")
     tenantId = $account.tenantId
     subscriptions = $subscriptionIds

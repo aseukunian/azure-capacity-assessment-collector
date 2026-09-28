@@ -2,6 +2,16 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.2.0] - 2026-09-28
+
+### Added
+
+- Added `-AllocationEventsOnly` to collect full VM inventory and allocation events without running unrelated collection sections.
+
+### Changed
+
+- Added the collection mode to the manifest.
+
 ## [1.1.0] - 2026-09-25
 
 ### Added
