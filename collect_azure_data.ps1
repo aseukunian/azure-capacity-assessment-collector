@@ -48,7 +48,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.3.0"
+$script:CollectorVersion = "1.3.1"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
 
@@ -916,7 +916,8 @@ recoveryservicesresources
     targetVmSize=tostring(properties.providerSpecificDetails.recoveryAzureVMSize)
 | order by sourceVmId asc, targetVmName asc
 "@
-        Get-GraphRows -Query $asrQuery -SubscriptionIds $subscriptionIds -ProgressName "Azure Site Recovery"
+        Get-GraphRows -Query $asrQuery -SubscriptionIds $subscriptionIds `
+            -ProgressName "Azure Site Recovery" -SubscriptionBatchSize 10
     }
 })
 $vmIdSet = @{}; foreach ($vm in $vms) { $vmIdSet[[string]$vm.id] = $true }

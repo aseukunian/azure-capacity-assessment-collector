@@ -2,6 +2,12 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.3.1] - 2026-09-29
+
+### Fixed
+
+- Batched Azure Site Recovery Resource Graph queries to avoid exceeding Windows command-line limits in tenants with many accessible subscriptions.
+
 ## [1.3.0] - 2026-09-29
 
 ### Added

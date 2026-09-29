@@ -77,7 +77,7 @@ this repository.
 
 Allocation events are collected concurrently across subscriptions, with four workers by default. VMs within each subscription remain sequential to reduce throttling pressure. Use `-AllocationConcurrency 1` for fully sequential collection, lower the value when throttling is sustained, or use `-SkipAllocationEvents` when that information is not required. Environments whose VMs are concentrated in one subscription will see less benefit from concurrency.
 
-Resource Graph inventory collection reports each subscription batch and result page as it runs. VM and Capacity Reservation queries use batches of 10 subscriptions so large tenant scopes provide regular progress feedback.
+Resource Graph collection reports each subscription batch and result page as it runs. VM inventory, Capacity Reservation, and Azure Site Recovery queries use batches of 10 subscriptions so large tenant scopes provide regular progress feedback and stay within Windows command-line limits.
 
 ### Allocation events only
 
