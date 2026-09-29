@@ -107,6 +107,32 @@ Use `-QuotaOnly` with explicit Azure regions to skip Resource Graph, VM inventor
 
 This mode produces only `compute_quota_usage.json` and `manifest.json`, plus the ZIP unless `-NoZip` is supplied. `-Locations` is required because the collector intentionally skips VM inventory and therefore cannot discover regions automatically. `-QuotaOnly` cannot be combined with `-AllocationEventsOnly`; the other skip switches are unnecessary and have no additional effect.
 
+### Merge offline quota exports
+
+If quota data is already available as one or more `quota-usage-<subscription-id>-<timestamp>.json` files per subscription, merge a folder of those exports without Azure CLI or Azure access:
+
+```powershell
+.\merge_quota_exports.ps1 `
+    -InputDirectory "C:\customer-data\quota-exports" `
+    -OutputPath "C:\customer-data\compute_quota_usage.json"
+```
+
+The merger scans the specified folder (not subdirectories), accepts either a root object or a one-object root array, validates every file's identity and timestamp, and selects the newest `collectedAtUtc` snapshot for each subscription. It then fully validates each selected snapshot. All files must belong to one tenant, and usage and quota entries must match by quota name. Existing output is protected; add `-Force` to replace it.
+
+The newer `Microsoft.Quota` export fields are normalized to the collector schema as follows:
+
+| Output field | Offline export source |
+|---|---|
+| `subscription_id` | `quotausage[].subscriptionId` |
+| `location` | `quotausage[].regions[].location` |
+| `resource_name` | Usage and quota `properties.name.value` |
+| `localized_name` | Usage and quota `properties.name.localizedValue` |
+| `current_value` | Usage `properties.usages.value` |
+| `limit` | Quota `properties.limit.value` |
+| `unit` | Usage and quota `properties.unit` |
+
+Empty regions produce no records. Invalid JSON, mixed tenants, filename/payload subscription mismatches, duplicate names, unmatched usage/quota records, incompatible metadata, or non-integer values stop the merge without replacing the output.
+
 ## Azure permissions
 
 The collector only performs read operations. The signed-in identity must be able to read:

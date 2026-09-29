@@ -2,6 +2,12 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.4.0] - 2026-09-29
+
+### Added
+
+- Added an offline quota export merger that combines the newest per-subscription `Microsoft.Quota` snapshots into collector-compatible `compute_quota_usage.json`.
+
 ## [1.3.1] - 2026-09-29
 
 ### Fixed

@@ -48,7 +48,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.3.1"
+$script:CollectorVersion = "1.4.0"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
 
