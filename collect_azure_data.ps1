@@ -25,6 +25,9 @@ param(
     [switch] $QuotaOnly,
 
     [Parameter()]
+    [switch] $SkipQuota,
+
+    [Parameter()]
     [string] $OutputDirectory = (Join-Path $PWD ("capacity-reservation-data-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss"))),
 
     [Parameter()]
@@ -48,7 +51,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.4.0"
+$script:CollectorVersion = "1.4.1"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
 
@@ -57,6 +60,9 @@ if ($AllocationEventsOnly -and $SkipAllocationEvents) {
 }
 if ($AllocationEventsOnly -and $QuotaOnly) {
     throw "-AllocationEventsOnly and -QuotaOnly cannot be combined."
+}
+if ($QuotaOnly -and $SkipQuota) {
+    throw "-QuotaOnly cannot be combined with -SkipQuota."
 }
 
 function Write-Section {
@@ -1028,8 +1034,14 @@ else {
 Export-JsonArray -Data $vmSizeInfo -Path (Join-Path $outputRoot "vm_size_info.json")
 
 Write-Section "Collecting Compute quota and usage"
-$computeQuotaUsage = @(Invoke-OptionalSection -Name "computeQuotaUsage" -Action {
-    Get-ComputeQuotaUsageForScope -SubscriptionIds $allSubscriptionIds -LocationIds $allLocations
+$computeQuotaUsage = @(if ($SkipQuota) {
+    $script:SectionStatus["computeQuotaUsage"] = [ordered]@{ status = "skipped"; records = 0 }
+    @()
+}
+else {
+    Invoke-OptionalSection -Name "computeQuotaUsage" -Action {
+        Get-ComputeQuotaUsageForScope -SubscriptionIds $allSubscriptionIds -LocationIds $allLocations
+    }
 })
 Export-JsonArray -Data $computeQuotaUsage -Path (Join-Path $outputRoot "compute_quota_usage.json")
 

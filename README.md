@@ -67,6 +67,7 @@ this repository.
 | `-AllocationConcurrency` | Concurrent subscription workers for Activity Logs; default 4, range 1–16 |
 | `-AllocationEventsOnly` | Collect only full VM inventory and allocation events; omit all unrelated sections and files |
 | `-QuotaOnly` | Collect only regional Microsoft.Compute quota usage; requires explicit `-Locations` |
+| `-SkipQuota` | Skip regional Microsoft.Compute quota usage collection while preserving an empty output file |
 | `-OutputDirectory` | Custom output directory; it must not already exist |
 | `-SkipCost` | Skip Cost Management runtime and cost collection |
 | `-SkipAllocationEvents` | Skip per-VM Activity Log collection |
@@ -105,7 +106,7 @@ Use `-QuotaOnly` with explicit Azure regions to skip Resource Graph, VM inventor
     -QuotaOnly
 ```
 
-This mode produces only `compute_quota_usage.json` and `manifest.json`, plus the ZIP unless `-NoZip` is supplied. `-Locations` is required because the collector intentionally skips VM inventory and therefore cannot discover regions automatically. `-QuotaOnly` cannot be combined with `-AllocationEventsOnly`; the other skip switches are unnecessary and have no additional effect.
+This mode produces only `compute_quota_usage.json` and `manifest.json`, plus the ZIP unless `-NoZip` is supplied. `-Locations` is required because the collector intentionally skips VM inventory and therefore cannot discover regions automatically. `-QuotaOnly` cannot be combined with `-AllocationEventsOnly` or `-SkipQuota`; the other skip switches are unnecessary and have no additional effect.
 
 ### Merge offline quota exports
 
@@ -140,7 +141,7 @@ The collector only performs read operations. The signed-in identity must be able
 - Virtual machines, resource groups, subscriptions, and Capacity Reservations through Azure Resource Graph
 - Azure Site Recovery protected items unless `-SkipAsr` is used
 - Subscription location metadata and Microsoft.Compute VM SKUs
-- Regional Microsoft.Compute usage and quota data
+- Regional Microsoft.Compute usage and quota data unless `-SkipQuota` is used
 - Subscription Activity Logs unless `-SkipAllocationEvents` is used
 - Cost Management query data unless `-SkipCost` is used
 
@@ -170,6 +171,8 @@ Optional sections that cannot be read are recorded as failed in `manifest.json`;
 Allocation-events-only mode intentionally emits only `vms.json`, `allocation_events.json`, and `manifest.json`.
 
 Quota-only mode intentionally emits only `compute_quota_usage.json` and `manifest.json`.
+
+When `-SkipQuota` is used, `compute_quota_usage.json` contains an empty array and the manifest records `computeQuotaUsage` as `skipped`.
 
 The generated package can contain customer-sensitive information, including Azure resource IDs, subscription and resource-group names, resource tags, VM names and sizes, ASR configuration, Activity Log callers and failure messages, and summarized cost records. It does not contain Azure access tokens or credentials.
 

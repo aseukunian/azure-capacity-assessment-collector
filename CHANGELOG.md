@@ -2,6 +2,12 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.4.1] - 2026-10-01
+
+### Added
+
+- Added `-SkipQuota` to skip regional Microsoft.Compute quota collection while preserving the output file and manifest section.
+
 ## [1.4.0] - 2026-09-29
 
 ### Added
