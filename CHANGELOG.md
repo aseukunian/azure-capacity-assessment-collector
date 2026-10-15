@@ -2,6 +2,12 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.4.2] - 2026-10-15
+
+### Fixed
+
+- Reduced allocation-event collection memory usage by streaming worker results back to the parent runspace, limiting live workers to the configured concurrency, and retaining only relevant VM lifecycle events.
+
 ## [1.4.1] - 2026-10-01
 
 ### Added

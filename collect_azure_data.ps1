@@ -51,7 +51,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:CollectorVersion = "1.4.1"
+$script:CollectorVersion = "1.4.2"
 $script:SectionStatus = [ordered]@{}
 $script:AzIsBatch = $null
 
@@ -399,11 +399,23 @@ function Get-ActivityLogEvents {
     $filter = "eventTimestamp ge '$($From.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))' and eventTimestamp le '$($To.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))' and resourceUri eq '$VmId'"
     $encodedFilter = [uri]::EscapeDataString($filter)
     $nextUrl = "https://management.azure.com/subscriptions/$subscriptionId/providers/microsoft.insights/eventtypes/management/values?api-version=2015-04-01&`$filter=$encodedFilter"
+    $operationNames = @(
+        "microsoft.compute/virtualmachines/start/action",
+        "microsoft.compute/virtualmachines/poweroff/action",
+        "microsoft.compute/virtualmachines/redeploy/action",
+        "microsoft.compute/virtualmachines/restart/action",
+        "microsoft.compute/virtualmachines/deallocate/action"
+    )
     $events = [System.Collections.Generic.List[object]]::new()
     while ($nextUrl) {
         $response = Invoke-AzJson -Arguments @("rest", "--method", "get", "--url", $nextUrl) -StatusAction $StatusAction
         foreach ($event in @($response.value)) {
-            $events.Add($event)
+            if (
+                $null -ne $event.operationName -and
+                $operationNames -contains ([string]$event.operationName.value).ToLowerInvariant()
+            ) {
+                $events.Add($event)
+            }
         }
         $nextUrl = if ($response.PSObject.Properties.Name -contains "nextLink") {
             $response.nextLink
@@ -518,6 +530,7 @@ $(${function:Convert-AllocationEvents}.ToString())
             [Parameter(Mandatory)][datetime] $From,
             [Parameter(Mandatory)][datetime] $To,
             [Parameter(Mandatory)][object] $ProgressQueue,
+            [Parameter(Mandatory)][object] $OutputQueue,
             [Parameter(Mandatory)][string] $FunctionDefinitions
         )
 
@@ -526,7 +539,6 @@ $(${function:Convert-AllocationEvents}.ToString())
         $script:AzIsBatch = $null
         . ([scriptblock]::Create($FunctionDefinitions))
 
-        $result = [System.Collections.Generic.List[object]]::new()
         foreach ($vm in $VmGroup) {
             $vmId = [string]$vm.id
             $subscriptionId = $vmId.Split("/")[2]
@@ -542,7 +554,7 @@ $(${function:Convert-AllocationEvents}.ToString())
 
             $events = @(Get-ActivityLogEvents -VmId $vmId -From $From -To $To -StatusAction $statusAction)
             foreach ($summary in @(Convert-AllocationEvents -VmId $vmId -Events $events)) {
-                $result.Add($summary)
+                $OutputQueue.Enqueue($summary)
             }
             $ProgressQueue.Enqueue([pscustomobject][ordered]@{
                 kind = "completed"
@@ -550,34 +562,51 @@ $(${function:Convert-AllocationEvents}.ToString())
                 vmId = $vmId
             })
         }
-        return $result.ToArray()
     }
 
     $progressQueue = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
+    $outputQueue = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
     $runspacePool = [runspacefactory]::CreateRunspacePool(1, $workerCount)
     $workers = [System.Collections.Generic.List[object]]::new()
     $result = [System.Collections.Generic.List[object]]::new()
     $completedVmCount = 0
+    $nextVmGroupIndex = 0
     $runspacePool.Open()
 
     try {
-        foreach ($vmGroup in $vmGroups) {
+        $startWorker = {
+            param([Parameter(Mandatory)][object] $VmGroup)
+
             $powerShell = [powershell]::Create()
             $powerShell.RunspacePool = $runspacePool
             [void]$powerShell.AddScript($workerScript)
-            [void]$powerShell.AddArgument(@($vmGroup.Group))
+            [void]$powerShell.AddArgument(@($VmGroup.Group))
             [void]$powerShell.AddArgument($From)
             [void]$powerShell.AddArgument($To)
             [void]$powerShell.AddArgument($progressQueue)
+            [void]$powerShell.AddArgument($outputQueue)
             [void]$powerShell.AddArgument($functionDefinitions)
-            $workers.Add([pscustomobject][ordered]@{
-                subscriptionId = $vmGroup.Name
+            return [pscustomobject][ordered]@{
+                subscriptionId = $VmGroup.Name
                 powerShell = $powerShell
                 handle = $powerShell.BeginInvoke()
-            })
+            }
+        }.GetNewClosure()
+
+        while ($nextVmGroupIndex -lt $workerCount) {
+            $workers.Add((& $startWorker $vmGroups[$nextVmGroupIndex]))
+            $nextVmGroupIndex++
         }
 
         while ($workers.Count -gt 0) {
+            $outputRow = $null
+            while ($outputQueue.TryDequeue([ref]$outputRow)) {
+                if ($null -ne $outputRow) {
+                    $result.Add($outputRow)
+                }
+                $outputRow = $null
+            }
+
             $progressMessage = $null
             while ($progressQueue.TryDequeue([ref]$progressMessage)) {
                 if ($progressMessage.kind -eq "completed") {
@@ -599,11 +628,7 @@ $(${function:Convert-AllocationEvents}.ToString())
             foreach ($worker in @($workers)) {
                 if ($worker.handle.IsCompleted) {
                     try {
-                        foreach ($row in @($worker.powerShell.EndInvoke($worker.handle))) {
-                            if ($null -ne $row) {
-                                $result.Add($row)
-                            }
-                        }
+                        [void]$worker.powerShell.EndInvoke($worker.handle)
                         if ($worker.powerShell.HadErrors) {
                             $workerError = @($worker.powerShell.Streams.Error) | Select-Object -First 1
                             throw "Activity Log worker failed for subscription $($worker.subscriptionId): $workerError"
@@ -613,12 +638,24 @@ $(${function:Convert-AllocationEvents}.ToString())
                         $worker.powerShell.Dispose()
                         [void]$workers.Remove($worker)
                     }
+                    if ($nextVmGroupIndex -lt $vmGroups.Count) {
+                        $workers.Add((& $startWorker $vmGroups[$nextVmGroupIndex]))
+                        $nextVmGroupIndex++
+                    }
                 }
             }
 
             if ($workers.Count -gt 0) {
                 Start-Sleep -Milliseconds 200
             }
+        }
+
+        $outputRow = $null
+        while ($outputQueue.TryDequeue([ref]$outputRow)) {
+            if ($null -ne $outputRow) {
+                $result.Add($outputRow)
+            }
+            $outputRow = $null
         }
 
         $progressMessage = $null
