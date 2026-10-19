@@ -120,6 +120,24 @@ If quota data is already available as one or more `quota-usage-<subscription-id>
 
 The merger scans the specified folder (not subdirectories), accepts either a root object or a one-object root array, validates every file's identity and timestamp, and selects the newest `collectedAtUtc` snapshot for each subscription. It then fully validates each selected snapshot. All files must belong to one tenant, and usage and quota entries must match by quota name. Existing output is protected; add `-Force` to replace it.
 
+### Create an Excel report from collected JSON
+
+After running `collect_azure_data.ps1`, create a workbook without querying
+Azure again:
+
+```powershell
+python .\allocation_report.py `
+    "C:\path\to\capacity-reservation-data-20261019-120000" `
+    --output "C:\path\to\allocation-report.xlsx"
+```
+
+The script requires `pandas` and `openpyxl`. It reads `vms.json` and
+`allocation_events.json`, then adds per-VM allocation counts, failure
+frequency, latest failure details, and a raw event worksheet. When present, it
+also includes capacity reservations, VM-size capabilities, and physical-zone
+mapping worksheets. It is fully offline and does not require Azure
+credentials. Missing optional files are omitted from the workbook.
+
 The newer `Microsoft.Quota` export fields are normalized to the collector schema as follows:
 
 | Output field | Offline export source |

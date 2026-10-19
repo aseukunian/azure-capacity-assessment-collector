@@ -8,6 +8,10 @@ All notable changes to the Azure Capacity Assessment Collector are documented he
 
 - Reduced allocation-event collection memory usage by streaming worker results back to the parent runspace, limiting live workers to the configured concurrency, and retaining only relevant VM lifecycle events.
 
+### Added
+
+- Added `allocation_report.py` to create an offline Excel report from collector JSON output.
+
 ## [1.4.1] - 2026-10-01
 
 ### Added
