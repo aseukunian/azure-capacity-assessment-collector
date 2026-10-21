@@ -2,6 +2,12 @@
 
 All notable changes to the Azure Capacity Assessment Collector are documented here.
 
+## [1.5.0] - 2026-10-21
+
+### Added
+
+- Added a standalone subscription-level VM allocation-event collector that includes VM create/update, start, redeploy, and restart operations, including retained Activity Log events for deleted VMs.
+
 ## [1.4.2] - 2026-10-15
 
 ### Fixed

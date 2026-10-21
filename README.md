@@ -56,6 +56,48 @@ The collector does not currently read or include this workbook automatically.
 Do not upload a completed customer workbook to a GitHub issue or commit it to
 this repository.
 
+## Subscription-level allocation events
+
+Use `collect_vm_allocation_events.ps1` when allocation history must include VM
+creation/update operations and VMs that no longer exist:
+
+```powershell
+.\collect_vm_allocation_events.ps1 `
+    -Subscriptions "<subscription-id-1>","<subscription-id-2>" `
+    -LookbackDays 89 `
+    -Concurrency 2
+```
+
+This standalone collector queries Azure Activity Log directly at subscription
+scope. It does not query current VM inventory, so matching events for deleted
+VMs remain collectible while Azure still retains them. Azure Activity Log
+retention is approximately 90 days; older events require an existing diagnostic
+export to Log Analytics, Storage, Event Hubs, or another archive.
+
+It collects these operations:
+
+- `Microsoft.Compute/virtualMachines/write` (create, resize, or update)
+- `Microsoft.Compute/virtualMachines/start/action`
+- `Microsoft.Compute/virtualMachines/redeploy/action`
+- `Microsoft.Compute/virtualMachines/restart/action`
+
+Azure uses `virtualMachines/write` for both creation and updates. The collector
+therefore labels it `createOrUpdate` rather than claiming every write is a VM
+creation. Resource Health and Policy events are not allocation attempts and are
+excluded.
+
+The output directory contains:
+
+| File | Contents |
+|---|---|
+| `allocation_event_records.json` | Curated underlying Activity Log status records, including failure properties |
+| `allocation_events.json` | Attempts correlated by VM resource ID, operation, and correlation ID |
+| `manifest.json` | Scope, time window, operations, record counts, and per-subscription errors |
+
+The script also creates a ZIP unless `-NoZip` is supplied. It requires Azure
+CLI authentication and Activity Log read access, but it does not require the
+Resource Graph extension.
+
 ## Parameters
 
 | Parameter | Purpose |
